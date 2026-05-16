@@ -5,8 +5,8 @@ gmail:
   # Credentials in .env file:
   #   GMAIL_USER=your.email@gmail.com
   #   GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
-  days_back: 90
-  max_results: 500
+  days_back: 365
+  max_results: 2000
   search_folder: "INBOX"
 
 # Classification Categories

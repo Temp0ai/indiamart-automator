@@ -4,7 +4,7 @@ Arihant Enterprises Mobile CRM — Native-feeling PWA.
 Run: python mobile.py  →  http://localhost:8080
 """
 
-import json, sqlite3, csv, io, os, re, random, time, base64
+import json, sqlite3, csv, io, os, re, random, time, base64, threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, parse_qs, urlparse
@@ -17,6 +17,216 @@ COMPANY = "Arihant Enterprises"
 PHONE = "+917020134619"
 LOCATION = "Pune"
 BIZ_TYPE = "Manufacturer & Exporter"
+
+# ── Email Extraction (background) ───────────────────────────────────────────
+
+_extract_status = {"running": False, "progress": "", "last_run": None, "count": 0}
+
+def run_extraction():
+    """Fetch Indiamart emails from Gmail in background thread."""
+    global _extract_status
+    if _extract_status["running"]:
+        return
+    _extract_status["running"] = True
+    _extract_status["progress"] = "Connecting to Gmail..."
+
+    try:
+        from dotenv import load_dotenv
+        from bs4 import BeautifulSoup
+        import imaplib, email
+        from email.header import decode_header
+        import quopri
+
+        load_dotenv(Path(__file__).parent / ".env")
+        GMAIL_USER = os.environ.get("GMAIL_USER", "")
+        GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+
+        if not GMAIL_USER or not GMAIL_APP_PASSWORD:
+            _extract_status["progress"] = "❌ Set GMAIL_USER and GMAIL_APP_PASSWORD in .env"
+            _extract_status["running"] = False
+            return
+
+        _extract_status["progress"] = f"Connecting as {GMAIL_USER}..."
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+        mail.select("INBOX")
+
+        _extract_status["progress"] = "Searching for Indiamart emails..."
+        status, message_ids = mail.search(None, '(FROM "indiamart")')
+        if status != "OK":
+            _extract_status["progress"] = "❌ Search failed"
+            mail.logout()
+            _extract_status["running"] = False
+            return
+
+        ids = message_ids[0].split()
+        if not ids:
+            _extract_status["progress"] = "📭 No emails found"
+            mail.logout()
+            _extract_status["running"] = False
+            return
+
+        # Take last 2000
+        ids = ids[-2000:]
+        _extract_status["progress"] = f"Processing {len(ids)} emails..."
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""CREATE TABLE IF NOT EXISTS inquiries (
+            id TEXT PRIMARY KEY, customer_name TEXT, phone TEXT, all_phones TEXT,
+            email TEXT, product_interest TEXT, categories TEXT, requirement TEXT,
+            quantity TEXT, location TEXT, inquiry_date TEXT, status TEXT DEFAULT 'new',
+            follow_up_day INTEGER DEFAULT -1, source_message_id TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+
+        phone_re = re.compile(r'(?:\+91[\s\-\.]?)?[6-9]\d{4}[\s\-\.]?\d{5}|\+91[6-9]\d{9}|(?:^|\s)[6-9]\d{9}(?:\s|$)')
+        email_re = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+        cities = ["Mumbai","Delhi","Bangalore","Bengaluru","Hyderabad","Ahmedabad","Chennai","Kolkata","Pune","Jaipur","Lucknow","Kanpur","Nagpur","Indore","Thane","Bhopal","Visakhapatnam","Patna","Vadodara","Ghaziabad","Ludhiana","Agra","Nashik","Faridabad","Meerut","Rajkot","Varanasi","Srinagar","Aurangabad","Amritsar","Coimbatore","Jabalpur","Gwalior","Vijayawada","Jodhpur","Madurai","Raipur","Kochi","Chandigarh","Mysore","Thiruvananthapuram","Surat"]
+        categories_kw = {"Vending Machines":["vending","coffee machine","automatic machine","dispenser"],"Tea/Coffee Premix":["premix","tea premix","coffee premix","instant mix"],"Jaggery Products":["jaggery","gur","organic sweetener"],"Nescafe Premix":["nescafe","nestle premix"],"Bru Premix":["bru","bru premix","hcc premix"],"Society Premix":["society","housing society","apartment","bulk"]}
+
+        count = 0
+        for idx, mid in enumerate(ids):
+            if idx % 50 == 0:
+                _extract_status["progress"] = f"Processing {idx+1}/{len(ids)}..."
+            try:
+                st, msg_data = mail.fetch(mid, "(RFC822)")
+                if st != "OK": continue
+                raw = msg_data[0][1]
+                msg = email.message_from_bytes(raw)
+
+                # Decode headers
+                subject = ""
+                for part, charset in decode_header(msg.get("Subject","")):
+                    subject += (part.decode(charset or "utf-8","replace") if isinstance(part,bytes) else str(part)) + " "
+                subject = subject.strip()
+
+                sender = ""
+                for part, charset in decode_header(msg.get("From","")):
+                    sender += (part.decode(charset or "utf-8","replace") if isinstance(part,bytes) else str(part)) + " "
+                sender = sender.strip()
+
+                date_str = msg.get("Date","")
+                msg_id = msg.get("Message-ID", mid.decode())
+
+                sender_name = ""
+                sender_email = ""
+                if "<" in sender and ">" in sender:
+                    sender_name = sender.split("<")[0].strip().strip('"')
+                    sender_email = sender.split("<")[1].split(">")[0]
+                else:
+                    sender_email = sender
+
+                # Get body (HTML → text)
+                body = ""
+                html_body = ""
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        ct = part.get_content_type()
+                        cd = str(part.get("Content-Disposition",""))
+                        if "attachment" in cd: continue
+                        payload = part.get_payload(decode=True)
+                        if not payload: continue
+                        charset = part.get_content_charset() or "utf-8"
+                        try: text = payload.decode(charset, errors="replace")
+                        except: text = payload.decode("utf-8","replace")
+                        if ct == "text/html": html_body = text
+                        elif ct == "text/plain" and not body: body = text
+                else:
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        charset = msg.get_content_charset() or "utf-8"
+                        try: text = payload.decode(charset,"replace")
+                        except: text = payload.decode("utf-8","replace")
+                        if msg.get_content_type() == "text/html": html_body = text
+                        else: body = text
+
+                if html_body:
+                    try:
+                        soup = BeautifulSoup(html_body, "html.parser")
+                        for tag in soup(["script","style"]): tag.decompose()
+                        body = soup.get_text("\n", strip=True)
+                        body = re.sub(r'\n{3,}', '\n\n', body)
+                    except: pass
+
+                combined = f"{subject}\n{body}"
+
+                # Extract name
+                name = sender_name
+                for pat in [r'(?:from|name|contact\s*person|buyer\s*name)[\s:]+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)', r'Name\s*[:\-]\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)']:
+                    m = re.search(pat, body, re.IGNORECASE)
+                    if m:
+                        name = m.group(1).strip()
+                        break
+
+                system_names = ["IndiaMART","IndiaMART Feedback","IndiaMART Advantage","IndiaMART BuyLeads","IndiaMART Reminder","Customer Care-IM","IndiaMART.com","noreply"]
+                if any(s.lower() in (name or "").lower() for s in system_names):
+                    for pat in [r'(?:from|name|contact\s*person)[\s:]+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)']:
+                        m = re.search(pat, body, re.IGNORECASE)
+                        if m:
+                            candidate = m.group(1).strip()
+                            if not any(s.lower() in candidate.lower() for s in system_names):
+                                name = candidate
+                                break
+
+                # Extract phones
+                raw_phones = phone_re.findall(combined)
+                phones = []
+                for p in raw_phones:
+                    digits = re.sub(r'\D','',p)
+                    if len(digits)==12 and digits.startswith('91'): digits=digits[2:]
+                    if len(digits)==10 and digits[0] in '6789': phones.append(f"+91{digits}")
+                phones = list(set(phones))
+
+                # Extract emails
+                found_emails = [e for e in email_re.findall(combined) if 'indiamart' not in e.lower() and e != sender_email]
+
+                # Classify
+                text_lower = combined.lower()
+                matched = [cat for cat, kw in categories_kw.items() if any(k in text_lower for k in kw)]
+                cats = matched if matched else ["Other"]
+
+                # Location
+                loc = None
+                for city in cities:
+                    if re.search(rf'\b{city}\b', combined, re.IGNORECASE):
+                        loc = city; break
+
+                inquiry = {
+                    "id": f"IND-{datetime.now().strftime('%Y%m%d')}-{msg_id[:8]}",
+                    "customer_name": name or "Unknown",
+                    "phone": phones[0] if phones else None,
+                    "all_phones": json.dumps(phones),
+                    "email": found_emails[0] if found_emails else sender_email,
+                    "product_interest": subject,
+                    "categories": json.dumps(cats),
+                    "requirement": body[:500].strip(),
+                    "location": loc,
+                    "inquiry_date": date_str,
+                    "status": "new",
+                    "follow_up_day": -1,
+                    "source_message_id": msg_id,
+                }
+
+                conn.execute("""INSERT OR REPLACE INTO inquiries
+                    (id,customer_name,phone,all_phones,email,product_interest,categories,requirement,location,inquiry_date,status,follow_up_day,source_message_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (inquiry["id"],inquiry["customer_name"],inquiry["phone"],inquiry["all_phones"],inquiry["email"],inquiry["product_interest"],inquiry["categories"],inquiry["requirement"],inquiry["location"],inquiry["inquiry_date"],inquiry["status"],inquiry["follow_up_day"],inquiry["source_message_id"]))
+                count += 1
+            except Exception as e:
+                continue
+
+        conn.commit()
+        conn.close()
+        mail.logout()
+
+        _extract_status["progress"] = f"✅ Done! {count} emails extracted"
+        _extract_status["count"] = count
+        _extract_status["last_run"] = datetime.now().isoformat()
+
+    except Exception as e:
+        _extract_status["progress"] = f"❌ Error: {str(e)[:100]}"
+    finally:
+        _extract_status["running"] = False
 
 # ── Gemini ───────────────────────────────────────────────────────────────────
 
@@ -217,6 +427,12 @@ label{font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px;displa
 <!-- HOME -->
 <div class="page active" id="page-home">
   <div class="stats" id="stats"></div>
+  <div class="card" style="background:linear-gradient(135deg,rgba(0,184,148,.1),rgba(0,184,148,.05));border-color:rgba(0,184,148,.2)">
+    <h3>📬 Fetch New Emails</h3>
+    <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Pull latest Indiamart inquiries from Gmail</p>
+    <button class="btn btn-green btn-block" id="home-extract-btn" onclick="startExtractHome()">🔄 Fetch from Gmail</button>
+    <div id="home-extract-status" style="font-size:11px;margin-top:8px;color:var(--muted);min-height:16px"></div>
+  </div>
   <div class="card">
     <h3>📂 Categories</h3>
     <div id="cat-list"></div>
@@ -308,6 +524,14 @@ label{font-size:11px;font-weight:600;color:var(--muted);margin-bottom:4px;displa
   <div class="sheet-content">
     <div class="sheet-handle"></div>
     <h3 style="margin-bottom:16px">⚙️ Settings</h3>
+
+    <div class="card" style="background:rgba(0,184,148,.08);border-color:rgba(0,184,148,.2);margin-bottom:16px">
+      <h3>📬 Fetch Indiamart Emails</h3>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:10px">Pull latest inquiries from Gmail into the app</p>
+      <button class="btn btn-green btn-block" id="extract-btn" onclick="startExtract()">🔄 Fetch Emails from Gmail</button>
+      <div id="extract-status" style="font-size:11px;margin-top:8px;color:var(--muted);min-height:16px"></div>
+    </div>
+
     <label>Gemini API Key</label>
     <input id="g-key" type="password" placeholder="AIza..." style="font-size:12px">
     <div style="display:flex;gap:6px">
@@ -587,6 +811,59 @@ function saveKey(){const k=el('g-key').value.trim();if(k){localStorage.setItem('
 async function testKey(){const k=getKey();if(!k){el('key-status').textContent='❌ Enter key';return}el('key-status').textContent='⏳ Testing...';try{const r=await fetch('/api/gemini',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,prompt:'Say hi in 5 words'})});const d=await r.json();el('key-status').textContent=d.result&&!d.result.includes('Error')?'✅ Connected!':'❌ Failed';el('key-status').style.color=d.result&&!d.result.includes('Error')?'var(--green)':'var(--red)'}catch(e){el('key-status').textContent='❌ Error';el('key-status').style.color='var(--red)'}}
 document.addEventListener('DOMContentLoaded',()=>{const k=getKey();if(k)el('g-key').value=k});
 
+// Email Extraction
+let extractPolling = null;
+async function startExtract(){
+  const btn=el('extract-btn');
+  const st=el('extract-status');
+  btn.disabled=true;btn.textContent='⏳ Starting...';btn.style.opacity='.6';
+  try{
+    const r=await api('/extract',{method:'POST'});
+    st.textContent=r.status||'Starting...';
+    extractPolling=setInterval(async()=>{
+      try{
+        const s=await api('/extract/status');
+        st.textContent=s.progress||'Running...';
+        if(!s.running){
+          clearInterval(extractPolling);extractPolling=null;
+          btn.disabled=false;btn.textContent='🔄 Fetch Emails from Gmail';btn.style.opacity='1';
+          st.textContent=s.progress||'Done!';
+          toast('Emails fetched! '+s.count+' new');
+          loadHome();
+        }
+      }catch(e){}
+    },2000);
+  }catch(e){
+    btn.disabled=false;btn.textContent='🔄 Fetch Emails from Gmail';btn.style.opacity='1';
+    st.textContent='❌ Error: '+e.message;
+  }
+}
+async function startExtractHome(){
+  const btn=el('home-extract-btn');
+  const st=el('home-extract-status');
+  btn.disabled=true;btn.textContent='⏳ Fetching...';btn.style.opacity='.6';
+  try{
+    const r=await api('/extract',{method:'POST'});
+    st.textContent=r.status||'Starting...';
+    extractPolling=setInterval(async()=>{
+      try{
+        const s=await api('/extract/status');
+        st.textContent=s.progress||'Running...';
+        if(!s.running){
+          clearInterval(extractPolling);extractPolling=null;
+          btn.disabled=false;btn.textContent='🔄 Fetch from Gmail';btn.style.opacity='1';
+          st.textContent=s.progress||'Done!';
+          toast('✅ '+s.count+' emails fetched!');
+          loadHome();
+        }
+      }catch(e){}
+    },2000);
+  }catch(e){
+    btn.disabled=false;btn.textContent='🔄 Fetch from Gmail';btn.style.opacity='1';
+    st.textContent='❌ Error: '+e.message;
+  }
+}
+
 // Add
 async function saveNew(){
   const d={customer_name:el('a-name').value||'Unknown',phone:el('a-phone').value,product_interest:el('a-prod').value,category:el('a-cat').value,location:el('a-loc').value,requirement:el('a-notes').value};
@@ -664,6 +941,15 @@ class H(BaseHTTPRequestHandler):
             k=b.get('key','');pr=b.get('prompt','')
             if not k or not pr:self.send_json({"error":"Missing"},400)
             else:self.send_json({"result":gemini(k,pr)})
+        elif p=='/api/extract':
+            if _extract_status["running"]:
+                self.send_json({"ok":True,"running":True,"status":_extract_status["progress"]})
+            else:
+                t = threading.Thread(target=run_extraction, daemon=True)
+                t.start()
+                self.send_json({"ok":True,"running":True,"status":"Starting extraction..."})
+        elif p=='/api/extract/status':
+            self.send_json(_extract_status)
         else:self.send_response(404);self.end_headers()
     def do_PUT(self):
         p=urlparse(self.path).path;b=self.body()

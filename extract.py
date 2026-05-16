@@ -17,9 +17,11 @@ import json
 import csv
 import sqlite3
 import yaml
+import quopri
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 import os
 
 load_dotenv()
@@ -62,31 +64,65 @@ def decode_mime_header(header_val):
 
 
 def get_email_body(msg) -> str:
-    """Extract plain text body from email message."""
-    body = ""
+    """Extract body from email — prefers HTML (parsed to text), falls back to plain."""
+    html_body = ""
+    plain_body = ""
+
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
             cd = str(part.get("Content-Disposition", ""))
-            if ct == "text/plain" and "attachment" not in cd:
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    body = payload.decode(charset, errors="replace")
-                    break
+            if "attachment" in cd:
+                continue
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            charset = part.get_content_charset() or "utf-8"
+            try:
+                text = payload.decode(charset, errors="replace")
+            except Exception:
+                text = payload.decode("utf-8", errors="replace")
+
+            if ct == "text/html":
+                html_body = text
+            elif ct == "text/plain" and not plain_body:
+                plain_body = text
     else:
         payload = msg.get_payload(decode=True)
         if payload:
             charset = msg.get_content_charset() or "utf-8"
-            body = payload.decode(charset, errors="replace")
-    return body
+            try:
+                text = payload.decode(charset, errors="replace")
+            except Exception:
+                text = payload.decode("utf-8", errors="replace")
+            if msg.get_content_type() == "text/html":
+                html_body = text
+            else:
+                plain_body = text
+
+    # Prefer HTML — parse to text for richer content extraction
+    if html_body:
+        try:
+            soup = BeautifulSoup(html_body, "html.parser")
+            # Remove script/style tags
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+            # Get text with spacing
+            text = soup.get_text(separator="\n", strip=True)
+            # Collapse multiple newlines
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            return text
+        except Exception:
+            pass
+
+    return plain_body
 
 
 # ── Extraction ───────────────────────────────────────────────────────────────
 
-PHONE_RE = re.compile(r'(?:\+91[\s-]?)?[6-9]\d{9}')
+PHONE_RE = re.compile(r'(?:\+91[\s\-\.]?)?[6-9]\d{4}[\s\-\.]?\d{5}|\+91[6-9]\d{9}|(?:^|\s)[6-9]\d{9}(?:\s|$)')
 EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
-QUANTITY_RE = re.compile(r'(\d+)\s*(?:units?|pieces?|pcs?|nos?|machines?|sets?)', re.IGNORECASE)
+QUANTITY_RE = re.compile(r'(\d+)\s*(?:units?|pieces?|pcs?|nos?|machines?|sets?|kg|tons?|litres?|liters?)', re.IGNORECASE)
 
 CITIES = [
     "Mumbai", "Delhi", "Bangalore", "Bengaluru", "Hyderabad", "Ahmedabad",
@@ -138,11 +174,32 @@ def parse_inquiry(sender_email: str, sender_name: str, subject: str,
                   body: str, date_str: str, msg_id: str) -> dict:
     combined = f"{subject}\n{body}"
 
-    # Try to extract customer name from body
+    # Try to extract customer name from body (Indiamart patterns)
     name = sender_name
-    name_match = re.search(r'(?:from|name|contact person)[:\s]+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)', body, re.IGNORECASE)
-    if name_match:
-        name = name_match.group(1).strip()
+    name_patterns = [
+        r'(?:from|name|contact\s*person|buyer\s*name|dear\s+team)[\s:]+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+        r'(?:Customer|Buyer|Enquiry\s+from)\s*[:\-]?\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+        r'Name\s*[:\-]\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+    ]
+    for pat in name_patterns:
+        m = re.search(pat, body, re.IGNORECASE)
+        if m:
+            name = m.group(1).strip()
+            break
+
+    # Skip system senders
+    system_names = ["IndiaMART", "IndiaMART Feedback", "IndiaMART Advantage",
+                    "IndiaMART BuyLeads", "IndiaMART Reminder", "Customer Care-IM",
+                    "IndiaMART.com", "noreply"]
+    if any(s.lower() in (name or "").lower() for s in system_names):
+        # Try harder to get real name from body
+        for pat in name_patterns:
+            m = re.search(pat, body, re.IGNORECASE)
+            if m:
+                candidate = m.group(1).strip()
+                if not any(s.lower() in candidate.lower() for s in system_names):
+                    name = candidate
+                    break
 
     phones = extract_phones(combined)
     emails = extract_emails_from_body(combined, sender_email)
@@ -161,7 +218,7 @@ def parse_inquiry(sender_email: str, sender_name: str, subject: str,
         "location": extract_location(combined),
         "inquiry_date": date_str,
         "status": "new",
-        "follow_up_day": 0,
+        "follow_up_day": -1,
         "source_message_id": msg_id,
     }
 
@@ -217,7 +274,7 @@ def save_inquiry(conn, inquiry):
 
 # ── IMAP Fetcher ─────────────────────────────────────────────────────────────
 
-def fetch_indiamart_emails(days_back: int = 7, max_results: int = 100) -> list[dict]:
+def fetch_indiamart_emails(days_back: int = 365, max_results: int = 1000) -> list[dict]:
     """Connect to Gmail via IMAP and fetch Indiamart inquiry emails."""
     if not GMAIL_USER or not GMAIL_APP_PASSWORD:
         raise ValueError(
@@ -232,9 +289,8 @@ def fetch_indiamart_emails(days_back: int = 7, max_results: int = 100) -> list[d
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select("INBOX")
 
-    # Search for Indiamart emails (all senders: buyershelpdesk, buyleads, buyershelp+enq, etc.)
-    since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-    search_criteria = f'(FROM "indiamart" SINCE {since_date})'
+    # Search for ALL Indiamart emails
+    search_criteria = '(FROM "indiamart")'
     print(f"🔍 Searching: {search_criteria}")
 
     status, message_ids = mail.search(None, search_criteria)
@@ -254,6 +310,7 @@ def fetch_indiamart_emails(days_back: int = 7, max_results: int = 100) -> list[d
     print(f"📨 Found {len(ids)} emails. Processing...\n")
 
     inquiries = []
+    skipped_system = 0
     for mid in ids:
         status, msg_data = mail.fetch(mid, "(RFC822)")
         if status != "OK":
@@ -277,7 +334,7 @@ def fetch_indiamart_emails(days_back: int = 7, max_results: int = 100) -> list[d
         else:
             sender_email = sender
 
-        # Get body
+        # Get body (HTML parsed to text)
         body = get_email_body(msg)
 
         inquiry = parse_inquiry(
@@ -288,15 +345,30 @@ def fetch_indiamart_emails(days_back: int = 7, max_results: int = 100) -> list[d
             date_str=date_str,
             msg_id=message_id,
         )
+
+        # Skip pure system/notification emails (no real inquiry)
+        system_subjects = ["BuyLeads allocated", "Catalog Performance",
+                           "Payment Invoice", "Feedback", "Advantage",
+                           "Reminder for your"]
+        is_system = any(kw in subject for kw in system_subjects)
+        if is_system and inquiry["customer_name"] == "Unknown":
+            skipped_system += 1
+            continue
+
         inquiries.append(inquiry)
 
         print(f"  📋 {inquiry['id']}")
         print(f"     Name:  {inquiry['customer_name']}")
         print(f"     Phone: {inquiry['phone'] or 'N/A'}")
         print(f"     Cat:   {', '.join(inquiry['categories'])}")
+        if inquiry['location']:
+            print(f"     City:  {inquiry['location']}")
+        if inquiry['requirement'] and inquiry['requirement'] != "Dear User":
+            print(f"     Req:   {inquiry['requirement'][:120]}...")
         print()
 
     mail.logout()
+    print(f"📊 Total: {len(inquiries)} inquiries | {skipped_system} system emails skipped")
     return inquiries
 
 
@@ -327,8 +399,8 @@ def main():
     print("=" * 60)
 
     db = init_db()
-    days_back = _config.get("gmail", {}).get("days_back", 90)
-    max_results = _config.get("gmail", {}).get("max_results", 500)
+    days_back = _config.get("gmail", {}).get("days_back", 365)
+    max_results = _config.get("gmail", {}).get("max_results", 2000)
     inquiries = fetch_indiamart_emails(days_back=days_back, max_results=max_results)
 
     for inq in inquiries:
@@ -336,10 +408,10 @@ def main():
 
     if inquiries:
         csv_path = export_to_csv(inquiries)
-        print(f"✅ Saved {len(inquiries)} inquiries to DB")
+        print(f"\n✅ Saved {len(inquiries)} inquiries to DB")
         print(f"✅ Exported to {csv_path}")
     else:
-        print("No new inquiries found.")
+        print("\nNo new inquiries found.")
 
     db.close()
     print("\nDone.")
