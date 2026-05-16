@@ -25,7 +25,9 @@ DB_PATH = "./data/inquiries.db"
 PORT = 8080
 COMPANY_NAME = "Arihant Enterprises"
 COMPANY_PHONE = "+917020134619"
-COMPANY_TAGLINE = "Your trusted partner for premium vending machines & premix supplies"
+COMPANY_LOCATION = "Pune"
+COMPANY_TYPE = "Manufacturer & Exporter"
+COMPANY_TAGLINE = "Premium vending machines & premix supplies — Manufacturer & Exporter based in Pune"
 
 # ── AI Message Generator ─────────────────────────────────────────────────────
 
@@ -425,7 +427,7 @@ label{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:3px;displa
   <div style="display:flex;justify-content:space-between;align-items:center">
     <div>
       <h1>🏢 Arihant Enterprises CRM</h1>
-      <div class="sub">Indiamart Inquiry Manager • WhatsApp Bulk Sender</div>
+      <div class="sub">Manufacturer & Exporter, Pune • WhatsApp CRM</div>
     </div>
     <div onclick="toggleSettings()" style="cursor:pointer;padding:6px;opacity:0.5;font-size:18px" title="Settings">⚙️</div>
   </div>
@@ -513,7 +515,8 @@ label{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:3px;displa
   <!-- Step 4: Generate & Send -->
   <div class="card">
     <h3>Step 4️⃣ Generate & Send</h3>
-    <button class="btn btn-blue btn-block" onclick="generateBulkMessages()" style="margin-bottom:10px">🤖 AI Generate Messages</button>
+    <button class="btn btn-blue btn-block" onclick="generateBulkMessages()" style="margin-bottom:6px">🤖 AI Generate Messages</button>
+    <button class="btn btn-outline btn-block" onclick="researchBulkAll()" style="margin-bottom:10px">🔍 Research All & Generate</button>
     <div id="bulk-preview"></div>
   </div>
 </div>
@@ -559,6 +562,19 @@ label{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:3px;displa
 
 <div class="toast" id="toast"></div>
 <button class="fab" onclick="openAddModal()">+</button>
+
+<!-- Install PWA Banner -->
+<div id="install-banner" style="display:none;position:fixed;bottom:70px;left:12px;right:12px;background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:14px;border-radius:12px;z-index:95;box-shadow:0 4px 20px rgba(0,0,0,.3)">
+  <div style="display:flex;align-items:center;gap:10px">
+    <div style="font-size:28px">📱</div>
+    <div style="flex:1">
+      <div style="font-weight:700;font-size:13px">Install Arihant CRM</div>
+      <div style="font-size:11px;opacity:.8">Add to home screen for app-like experience</div>
+    </div>
+    <button class="btn btn-green btn-sm" onclick="installPWA()" style="font-size:11px">Install</button>
+    <button onclick="document.getElementById('install-banner').style.display='none'" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer">×</button>
+  </div>
+</div>
 
 <div class="bottom-nav">
   <div class="nav-item active" data-page="dashboard">
@@ -665,6 +681,8 @@ async function showDetail(id){
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="genMsg('${inq.id}','offer')">🎯 Offer</button>
       <button class="btn btn-outline btn-sm" style="flex:1" onclick="genMsg('${inq.id}','reengagement')">🔄 Follow-up</button>
     </div>
+    <button class="btn btn-blue btn-sm btn-block" style="margin-top:8px" onclick="researchAndGenerate('${inq.id}')">🔍 Research Business & Generate</button>
+    <div id="biz-info-${inq.id}"></div>
     <div id="msg-p-${inq.id}"></div>
     <button class="btn btn-red btn-sm btn-block" style="margin-top:12px" onclick="deleteInq('${inq.id}')">🗑️ Delete</button>
   `;
@@ -685,6 +703,90 @@ async function genMsg(id,tpl){
   const ph=(inq.phone||'').replace(/[^0-9]/g,'');
   const wa=ph?`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`:'';
   document.getElementById(`msg-p-${id}`).innerHTML=`<div class="msg-preview">${msg}</div>${wa?`<a class="wa-link" href="${wa}" target="_blank" style="font-size:12px;padding:8px">💬 Send via WhatsApp</a>`:'<div style="color:var(--red);font-size:12px;margin-top:6px">⚠️ No phone</div>'}`;
+}
+
+async function researchAndGenerate(id){
+  const inq=await api('/inquiries/'+id);
+  const key=getGeminiKey();
+  if(!key){toast('Add Gemini API key in Settings first!');return}
+  
+  document.getElementById(`biz-info-${id}`).innerHTML='<div style="text-align:center;padding:12px;color:var(--muted)">🔍 Loading research tools...</div>';
+  document.getElementById(`msg-p-${id}`).innerHTML='';
+  
+  try{
+    const r=await fetch('/api/research',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      key:key,
+      name:inq.customer_name||'',
+      location:inq.location||'',
+      product:(inq.product_interest||'').substring(0,60),
+      category:(inq.categories_parsed||['Other'])[0]
+    })});
+    const d=await r.json();
+    
+    // Show search links + context input
+    let bizHtml=`<div class="card" style="background:#f0f7ff;padding:12px;margin:8px 0">
+      <strong style="font-size:12px">🔍 Research ${inq.customer_name||'this business'}</strong>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin:8px 0">
+        ${d.business_info?.google_url?`<a href="${d.business_info.google_url}" target="_blank" class="btn btn-outline btn-sm" style="font-size:10px;text-decoration:none">🌐 Google</a>`:''}
+        ${d.business_info?.linkedin_url?`<a href="${d.business_info.linkedin_url}" target="_blank" class="btn btn-outline btn-sm" style="font-size:10px;text-decoration:none">💼 LinkedIn</a>`:''}
+        ${d.business_info?.indiamart_url?`<a href="${d.business_info.indiamart_url}" target="_blank" class="btn btn-outline btn-sm" style="font-size:10px;text-decoration:none">🏪 IndiaMART</a>`:''}
+        ${d.business_info?.whatsapp_url?`<a href="${d.business_info.whatsapp_url}" target="_blank" class="btn btn-outline btn-sm" style="font-size:10px;text-decoration:none">💬 WhatsApp Biz</a>`:''}
+      </div>
+      <label style="font-size:11px">Paste business info from search:</label>
+      <textarea id="biz-context-${id}" placeholder="e.g., Office in Andheri, 50 employees, uses competitor machine, rated 4.2 on Google..." style="font-size:11px;padding:8px;min-height:50px;margin-bottom:6px"></textarea>
+      <button class="btn btn-blue btn-sm btn-block" onclick="generateWithContext('${id}')">🤖 Generate Personalized Message</button>
+    </div>`;
+    document.getElementById(`biz-info-${id}`).innerHTML=bizHtml;
+    
+    // If there's already an AI message (from template), show it
+    if(d.ai_message){
+      const ph=(inq.phone||'').replace(/[^0-9]/g,'');
+      const wa=ph?`https://wa.me/${ph}?text=${encodeURIComponent(d.ai_message)}`:'';
+      document.getElementById(`msg-p-${id}`).innerHTML=`
+        <div style="font-size:11px;color:var(--green);margin:6px 0">🤖 Template message (add context for personalized version)</div>
+        <div class="msg-preview">${d.ai_message}</div>
+        ${wa?`<a class="wa-link" href="${wa}" target="_blank" style="font-size:12px;padding:8px;text-align:center;text-decoration:none">💬 Send WhatsApp</a>`:''}`;
+    }
+  }catch(e){
+    document.getElementById(`biz-info-${id}`).innerHTML='<div style="color:var(--red);font-size:12px">❌ '+e.message+'</div>';
+  }
+}
+
+async function generateWithContext(id){
+  const inq=await api('/inquiries/'+id);
+  const key=getGeminiKey();
+  const context=document.getElementById(`biz-context-${id}`).value;
+  if(!context.trim()){toast('Paste some business info first!');return}
+  
+  document.getElementById(`msg-p-${id}`).innerHTML='<div style="text-align:center;padding:10px;color:var(--muted)">🤖 Generating personalized message...</div>';
+  
+  try{
+    const r=await fetch('/api/research',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      key:key,
+      name:inq.customer_name||'',
+      location:inq.location||'',
+      product:(inq.product_interest||'').substring(0,60),
+      category:(inq.categories_parsed||['Other'])[0],
+      context:context
+    })});
+    const d=await r.json();
+    
+    if(d.ai_message){
+      const ph=(inq.phone||'').replace(/[^0-9]/g,'');
+      const wa=ph?`https://wa.me/${ph}?text=${encodeURIComponent(d.ai_message)}`:'';
+      document.getElementById(`msg-p-${id}`).innerHTML=`
+        <div style="font-size:11px;color:var(--green);margin:6px 0">✨ AI-personalized with business context</div>
+        <div class="msg-preview">${d.ai_message}</div>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          ${wa?`<a class="wa-link" href="${wa}" target="_blank" style="flex:1;font-size:12px;padding:8px;text-align:center;text-decoration:none">💬 Send WhatsApp</a>`:''}
+          <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText(${JSON.stringify(d.ai_message)});toast('Copied!')">📋 Copy</button>
+        </div>`;
+    }else{
+      document.getElementById(`msg-p-${id}`).innerHTML='<div style="color:var(--red);font-size:12px">❌ Failed to generate. Check Gemini key.</div>';
+    }
+  }catch(e){
+    document.getElementById(`msg-p-${id}`).innerHTML='<div style="color:var(--red);font-size:12px">❌ '+e.message+'</div>';
+  }
 }
 
 // AI Message Generator (client-side)
@@ -720,17 +822,17 @@ const TPLS={
   reengagement:["Hi {name},\\n\\nThinking about a vending solution for your society?\\n\\n💡 Society Special: First 10kg premix FREE with machine order.\\n\\n📞 {phone}\\n— {company}"]
 },
 "Other":{
-  thank_you:["Hi {name} 👋\\n\\nThank you for reaching out about {product}!\\n\\nWe\\'d love to help.\\n\\n🏭 About Us:\\n• Leading supplier of vending machines & premixes\\n• 500+ clients across India\\n• Free consultation & demo\\n\\n📞 {phone}\\n— {company}"],
-  offer:["Hi {name} 👋\\n\\nFollowing up on {product}.\\n\\n🎯 Special Offer:\\n• 10% early-bird discount\\n• Free consultation\\n• Pan-India delivery\\n\\n📞 {phone}\\n— {company}"],
-  reengagement:["Hi {name},\\n\\nStill interested in {product}?\\n\\n💡 Call us anytime: {phone}\\n— {company}"]
+  thank_you:["Hi {name} 👋\\n\\nThank you for reaching out about {product}!\\n\\nWe\\'re {company} — a leading manufacturer & exporter from {location}.\\n\\n🏭 About Us:\\n• Direct manufacturer (best prices)\\n• Export quality products\\n• 500+ clients across India\\n• Free consultation & demo\\n\\n📞 {phone}\\n— {company}"],
+  offer:["Hi {name} 👋\\n\\nFollowing up on {product}.\\n\\n🎯 Direct-from-manufacturer pricing:\\n• 10% early-bird discount\\n• No middlemen — factory rates\\n• Free consultation & demo\\n• Pan-India & export delivery\\n\\n📞 {phone}\\n— {company}"],
+  reengagement:["Hi {name},\\n\\nStill interested in {product}?\\n\\nAs a manufacturer from {location}, we offer the best prices with quality assurance.\\n\\n💡 Call us anytime: {phone}\\n— {company}"]
 }
 };
 
-function ai_gen(cat,tpl,name,product){
-  const c=TPLS[cat]||TPLS["Other"];
+function ai_gen(category,tpl,name,product){
+  const c=TPLS[category]||TPLS["Other"];
   const t=c[tpl]||c.thank_you;
   const msg=t[Math.floor(Math.random()*t.length)];
-  return msg.replace(/{name}/g,name).replace(/{product}/g,product).replace(/{phone}/g,"+917020134619").replace(/{company}/g,"Arihant Enterprises");
+  return msg.replace(/{name}/g,name).replace(/{product}/g,product).replace(/{phone}/g,"+917020134619").replace(/{company}/g,"Arihant Enterprises").replace(/{location}/g,"Pune");
 }
 
 // Bulk Send Page
@@ -849,6 +951,60 @@ function openAllWhatsApp(){
   openNext();
 }
 
+async function researchBulkAll(){
+  if(!bulkSelected.size){toast('Select contacts first!');return}
+  const key=getGeminiKey();
+  if(!toast('Add Gemini key in Settings first!'))return;
+  if(!key){toast('Add Gemini API key in Settings!');return}
+  
+  const inqs=(window._bulkInqs||[]).filter(i=>bulkSelected.has(i.id));
+  document.getElementById('bulk-preview').innerHTML='<div class="send-progress"><strong>🔍 Researching '+inqs.length+' businesses...</strong><p style="font-size:11px;color:var(--muted);margin-top:4px">This may take a minute</p></div>';
+  
+  const msgs=[];
+  for(let idx=0;idx<inqs.length;idx++){
+    const i=inqs[idx];
+    document.getElementById('bulk-preview').innerHTML='<div class="send-progress"><strong>🔍 Researching '+(idx+1)+'/'+inqs.length+'</strong><p style="font-size:11px;color:var(--muted);margin-top:4px">'+(i.customer_name||'')+'</p></div>';
+    
+    try{
+      const r=await fetch('/api/research',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        key,name:i.customer_name||'',location:i.location||'',product:(i.product_interest||'').substring(0,60),category:(i.categories_parsed||['Other'])[0]
+      })});
+      const d=await r.json();
+      const msg=d.ai_message||await ai_generate((i.categories_parsed||['Other'])[0],bulkTemplate,i.customer_name||'there',(i.product_interest||'').substring(0,60));
+      const ph=(i.phone||'').replace(/[^0-9]/g,'');
+      msgs.push({id:i.id,name:i.customer_name,phone:i.phone,message:msg,wa_link:ph?`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`:'',biz:d.business_info});
+    }catch(e){
+      const msg=await ai_generate((i.categories_parsed||['Other'])[0],bulkTemplate,i.customer_name||'there',(i.product_interest||'').substring(0,60));
+      const ph=(i.phone||'').replace(/[^0-9]/g,'');
+      msgs.push({id:i.id,name:i.customer_name,phone:i.phone,message:msg,wa_link:ph?`https://wa.me/${ph}?text=${encodeURIComponent(msg)}`:''});
+    }
+  }
+  
+  document.getElementById('bulk-preview').innerHTML=`
+    <div class="send-progress">
+      <strong>📨 ${msgs.length} messages ready (AI + Business Research)</strong>
+    </div>
+    <button class="btn btn-green btn-block" onclick="openAllWhatsApp()" style="margin-bottom:10px">📱 Open All in WhatsApp (${msgs.length})</button>
+    <button class="btn btn-outline btn-block" onclick="markAllSent()" style="margin-bottom:10px">✅ Mark All as Sent</button>
+    ${msgs.map(m=>`
+      <div class="card" style="padding:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <strong style="font-size:12px">${m.name}</strong>
+          <span style="font-size:10px;color:var(--muted)">${m.phone||''}</span>
+        </div>
+        ${m.biz&&m.biz.snippets&&m.biz.snippets.length?`<div style="font-size:10px;color:var(--muted);margin:4px 0">🔍 ${m.biz.snippets[0].substring(0,80)}...</div>`:''}
+        <div class="msg-template">${m.message}</div>
+        <div class="msg-actions">
+          ${m.wa_link?`<a class="btn btn-green btn-sm" href="${m.wa_link}" target="_blank" style="text-decoration:none;text-align:center">💬 Send</a>`:''}
+          <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText(${JSON.stringify(m.message)});toast('Copied!')">📋 Copy</button>
+          <button class="btn btn-outline btn-sm" onclick="markOneSent('${m.id}')">✓ Sent</button>
+        </div>
+      </div>
+    `).join('')}
+  `;
+  window._bulkMsgs=msgs;
+}
+
 async function markAllSent(){
   const ids=Array.from(bulkSelected);
   await api('/bulk-status',{method:'POST',body:{ids,status:'contacted'}});
@@ -898,6 +1054,12 @@ async function saveNewInquiry(){
 
 // Init
 loadDashboard();loadInquiries();
+
+// PWA Install
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;document.getElementById('install-banner').style.display='block'});
+function installPWA(){if(deferredPrompt){deferredPrompt.prompt();deferredPrompt.userChoice.then(r=>{if(r.outcome==='accepted')toast('App installed!');document.getElementById('install-banner').style.display='none';deferredPrompt=null})}}
+window.addEventListener('appinstalled',()=>{document.getElementById('install-banner').style.display='none';toast('CRM installed as app!')});
 
 // Settings
 function toggleSettings(){const p=document.getElementById('settings-panel');p.style.display=p.style.display==='none'?'block':'none'}
@@ -987,20 +1149,36 @@ class CRMHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "name": "Arihant Enterprises CRM", "short_name": "Arihant CRM",
+                "description": "Manufacturer & Exporter — Indiamart Inquiry Manager",
                 "start_url": "/", "display": "standalone",
                 "background_color": "#1a1a2e", "theme_color": "#1a1a2e",
-                "icons": [{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}],
+                "orientation": "portrait",
+                "categories": ["business", "productivity"],
+                "icons": [
+                    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}
+                ],
             }).encode())
         elif path == '/icon.svg':
             self.send_response(200)
             self.send_header('Content-Type', 'image/svg+xml')
             self.end_headers()
-            self.wfile.write(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#1a1a2e"/><text x="50" y="68" font-size="50" text-anchor="middle" fill="white">\xf0\x9f\x8f\xa2</text></svg>')
+            self.wfile.write(b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="96" fill="#1a1a2e"/><text x="256" y="320" font-size="240" text-anchor="middle" fill="white">A</text><text x="256" y="420" font-size="60" text-anchor="middle" fill="#00a884">CRM</text></svg>')
+        elif path == '/icon-192.png' or path == '/icon-512.png':
+            # Generate a simple PNG icon (1x1 pixel placeholder - PWA will use SVG fallback)
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/png')
+            self.end_headers()
+            # Minimal valid PNG (1x1 dark pixel)
+            import base64
+            png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            self.wfile.write(base64.b64decode(png_b64))
         elif path == '/sw.js':
             self.send_response(200)
             self.send_header('Content-Type', 'application/javascript')
             self.end_headers()
-            self.wfile.write(b"self.addEventListener('install',e=>{self.skipWaiting()});self.addEventListener('activate',e=>{e.waitUntil(clients.claim())});self.addEventListener('fetch',e=>{if(e.request.url.includes('/api/'))return;e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).then(resp=>{const c=resp.clone();caches.open('crm-v1').then(c=>c.put(e.request,c));return resp})))});")
+            self.wfile.write(b"const CACHE='crm-v2';const PRECACHE=['/','/manifest.json','/icon.svg'];self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(PRECACHE)).then(()=>self.skipWaiting()))});self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});self.addEventListener('fetch',e=>{if(e.request.url.includes('/api/'))return;e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).then(resp=>{if(resp.status===200){const c=resp.clone();caches.open(CACHE).then(cache=>cache.put(e.request,c))}return resp}).catch(()=>caches.match('/'))))});")
         elif path == '/api/stats':
             self.send_json(get_stats())
         elif path == '/api/inquiries':
@@ -1044,6 +1222,31 @@ class CRMHandler(BaseHTTPRequestHandler):
             else:
                 result = call_gemini(api_key, prompt)
                 self.send_json({"result": result})
+        elif path == '/api/research':
+            name = body.get('name', '')
+            location = body.get('location', '')
+            product = body.get('product', '')
+            api_key = body.get('key', '')
+            user_context = body.get('context', '')  # User-pasted business context
+            
+            # Step 1: Generate search URLs
+            biz_info = search_business_info(name, location, product)
+            
+            # Step 2: If user provided context, add it
+            if user_context:
+                biz_info["user_context"] = user_context
+                biz_info["snippets"].append(f"[User Research] {user_context[:300]}")
+            
+            # Step 3: If Gemini key available, analyze with context
+            ai_msg = None
+            if api_key and name:
+                category = body.get('category', 'Other')
+                ai_msg = analyze_with_context(api_key, name, product, category, location, biz_info)
+            
+            self.send_json({
+                "business_info": biz_info,
+                "ai_message": ai_msg,
+            })
         else:
             self.send_response(404)
             self.end_headers()
@@ -1087,6 +1290,63 @@ def call_gemini(api_key, prompt):
             return result["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
         return f"Error: {str(e)}"
+
+
+def search_business_info(name, location="", product=""):
+    """Generate search URLs for manual business research."""
+    query = f"{name} {location} {product} business"
+    return {
+        "google_url": f"https://www.google.com/search?q={quote(query)}",
+        "linkedin_url": f"https://www.google.com/search?q={quote(name+' '+location+' linkedin')}",
+        "indiamart_url": f"https://www.google.com/search?q={quote(name+' indiamart seller profile')}",
+        "whatsapp_url": f"https://www.google.com/search?q={quote(name+' '+location+' whatsapp business')}",
+        "snippets": [],
+        "note": "Open search links to research this business, then paste context below",
+    }
+
+
+def analyze_with_context(api_key, name, product, category, location, business_info=None):
+    """Generate AI message with business context from Google/WhatsApp profiles."""
+    
+    context_parts = []
+    if business_info:
+        if business_info.get("snippets"):
+            context_parts.append("Business context from Google:\n" + "\n".join(f"- {s}" for s in business_info["snippets"][:3]))
+        if business_info.get("rating"):
+            context_parts.append(f"Google rating: {business_info['rating']}")
+        if business_info.get("hours"):
+            context_parts.append(f"Business hours: {business_info['hours']}")
+    
+    context = "\n".join(context_parts) if context_parts else "No additional business context found."
+    
+    prompt = f"""You are a WhatsApp business message writer for {COMPANY_NAME} ({COMPANY_PHONE}).
+We are a {COMPANY_TYPE} based in {COMPANY_LOCATION}.
+We sell: vending machines, tea/coffee premix, jaggery products, Nescafe/Bru premix.
+We manufacture and export our products across India and internationally.
+
+CUSTOMER INFO:
+- Name: {name}
+- Looking for: {product}
+- Category: {category}
+- Location: {location or 'Unknown'}
+
+BUSINESS INTELLIGENCE:
+{context}
+
+TASK: Write a highly personalized WhatsApp follow-up message.
+
+RULES:
+- Reference specific details from their business if available
+- Be warm and human, not robotic
+- Keep under 120 words
+- Use emojis naturally (👋 ☕ 🎯 ✅)
+- Include a clear call-to-action
+- End with: — {COMPANY_NAME}
+- Format for WhatsApp (*bold*, line breaks)
+- If you know their business type, tailor the offer (e.g., office → productivity, hotel → guest experience, canteen → staff satisfaction)
+- Just return the message text, nothing else"""
+
+    return call_gemini(api_key, prompt)
 
 
 if __name__ == '__main__':
