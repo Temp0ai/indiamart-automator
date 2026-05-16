@@ -1,0 +1,91 @@
+name: Build APK
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build APK
+        run: |
+          cd android
+          
+          # Paths
+          BUILD_DIR=build
+          APP_DIR=app/src/main
+          PACKAGE=com.arihant.crm
+          
+          # Clean
+          rm -rf $BUILD_DIR/apk $BUILD_DIR/obj
+          mkdir -p $BUILD_DIR/apk $BUILD_DIR/obj
+          
+          # Compile Java
+          echo "Compiling Java..."
+          javac -source 11 -target 11 \
+            -bootclasspath "$ANDROID_HOME/platforms/android-34/android.jar" \
+            -classpath "$ANDROID_HOME/platforms/android-34/android.jar" \
+            -d $BUILD_DIR/obj \
+            $APP_DIR/java/com/arihant/crm/*.java \
+            $BUILD_DIR/gen/com/arihant/crm/R.java
+          
+          # DEX
+          echo "Creating DEX..."
+          d8 --output $BUILD_DIR/apk \
+            --lib "$ANDROID_HOME/platforms/android-34/android.jar" \
+            $BUILD_DIR/obj/com/arihant/crm/*.class
+          
+          # Package APK
+          echo "Packaging APK..."
+          aapt package -f \
+            -M $APP_DIR/AndroidManifest.xml \
+            -S $APP_DIR/res \
+            -I "$ANDROID_HOME/platforms/android-34/android.jar" \
+            -F $BUILD_DIR/base.apk
+          
+          # Add DEX to APK
+          cd $BUILD_DIR/apk
+          aapt add -f ../base.apk classes.dex
+          cd ../..
+          
+          # Align
+          echo "Aligning..."
+          zipalign -f 4 $BUILD_DIR/base.apk $BUILD_DIR/aligned.apk
+          
+          # Sign
+          echo "Signing..."
+          apksigner sign \
+            --ks $BUILD_DIR/debug.keystore \
+            --ks-pass pass:android \
+            --key-pass pass:android \
+            --ks-key-alias androiddebugkey \
+            --out $BUILD_DIR/arihant-crm.apk \
+            $BUILD_DIR/aligned.apk
+          
+          echo "✅ APK built: android/build/arihant-crm.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arihant-crm
+          path: android/build/arihant-crm.apk
+
+      - name: Create Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: android/build/arihant-crm.apk
+          generate_release_notes: true
