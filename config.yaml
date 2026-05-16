@@ -1,0 +1,57 @@
+# Indiamart Inquiry Automator — Configuration
+
+# Gmail IMAP (no Google Cloud needed)
+gmail:
+  # Credentials in .env file:
+  #   GMAIL_USER=your.email@gmail.com
+  #   GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
+  days_back: 7
+  max_results: 100
+  search_folder: "INBOX"
+
+# Classification Categories
+categories:
+  - name: "Vending Machines"
+    keywords: ["vending", "coffee machine", "automatic machine", "dispenser"]
+  - name: "Tea/Coffee Premix"
+    keywords: ["premix", "tea premix", "coffee premix", "instant mix"]
+  - name: "Jaggery Products"
+    keywords: ["jaggery", "gur", "organic sweetener"]
+  - name: "Nescafe Premix"
+    keywords: ["nescafe", "nestle premix"]
+  - name: "Bru Premix"
+    keywords: ["bru", "bru premix", "hcc premix"]
+  - name: "Society Premix"
+    keywords: ["society", "housing society", "apartment", "bulk"]
+
+# WhatsApp — uses pywhatkit (WhatsApp Web) + wa.me links
+whatsapp:
+  method: "pywhatkit"        # "pywhatkit" (automated) or "links" (wa.me export)
+  daily_limit: 50
+  send_window_start: "09:00"
+  send_window_end: "21:00"
+  wait_before_send: 20       # seconds (pywhatkit browser delay)
+  delay_between: 5           # seconds between messages
+
+# Follow-up Schedule
+follow_up:
+  - day: 0
+    label: "Thank You"
+    description: "Immediate thank-you + product overview"
+  - day: 2
+    label: "Offer"
+    description: "Personalized offer with discount"
+  - day: 10
+    label: "Re-engagement"
+    description: "Re-engagement check-in"
+
+# Storage
+storage:
+  database: "./data/inquiries.db"
+  export_dir: "./data/"
+  call_log: "./data/call_log.csv"
+
+# Dashboard
+dashboard:
+  port: 8080
+  host: "0.0.0.0"
