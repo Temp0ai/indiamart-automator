@@ -1,0 +1,7 @@
+.env
+__pycache__/
+venv/
+*.pyc
+data/inquiries.db
+data/inquiries_export.csv
+data/whatsapp_bulk.csv

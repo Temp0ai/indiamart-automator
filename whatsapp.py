@@ -38,8 +38,8 @@ DB_PATH = "./data/inquiries.db"
 DAILY_LIMIT = int(os.environ.get("WA_DAILY_LIMIT", "50"))
 SEND_WINDOW_START = "09:00"
 SEND_WINDOW_END = "21:00"
-COMPANY_NAME = os.environ.get("COMPANY_NAME", "Our Company")
-COMPANY_PHONE = os.environ.get("COMPANY_PHONE", "+91-XXXXXXXXXX")
+COMPANY_NAME = os.environ.get("COMPANY_NAME", "Arihant Enterprises")
+COMPANY_PHONE = os.environ.get("COMPANY_PHONE", "+917020134619")
 
 
 # ── Message Templates ────────────────────────────────────────────────────────

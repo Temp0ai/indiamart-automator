@@ -16,12 +16,17 @@ import re
 import json
 import csv
 import sqlite3
+import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
+
+# Load config
+_config_path = Path(__file__).parent / "config.yaml"
+_config = yaml.safe_load(_config_path.read_text()) if _config_path.exists() else {}
 
 # ── Config ───────────────────────────────────────────────────────────────────
 
@@ -227,9 +232,9 @@ def fetch_indiamart_emails(days_back: int = 7, max_results: int = 100) -> list[d
     mail.login(GMAIL_USER, GMAIL_APP_PASSWORD)
     mail.select("INBOX")
 
-    # Search for Indiamart emails
+    # Search for Indiamart emails (all senders: buyershelpdesk, buyleads, buyershelp+enq, etc.)
     since_date = (datetime.now() - timedelta(days=days_back)).strftime("%d-%b-%Y")
-    search_criteria = f'(FROM "indiamart.com" SINCE {since_date})'
+    search_criteria = f'(FROM "indiamart" SINCE {since_date})'
     print(f"🔍 Searching: {search_criteria}")
 
     status, message_ids = mail.search(None, search_criteria)
@@ -322,7 +327,9 @@ def main():
     print("=" * 60)
 
     db = init_db()
-    inquiries = fetch_indiamart_emails()
+    days_back = _config.get("gmail", {}).get("days_back", 90)
+    max_results = _config.get("gmail", {}).get("max_results", 500)
+    inquiries = fetch_indiamart_emails(days_back=days_back, max_results=max_results)
 
     for inq in inquiries:
         save_inquiry(db, inq)
