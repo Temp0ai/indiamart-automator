@@ -639,6 +639,21 @@ class H(BaseHTTPRequestHandler):
         elif p=='/api/export':
             self.send_response(200);self.send_header('Content-Type','text/csv');self.send_header('Content-Disposition','attachment;filename=inquiries.csv');self.end_headers()
             self.wfile.write(export_csv().encode())
+        elif p=='/download' or p=='/download.apk' or p=='/arihant-crm.apk':
+            apk_path = Path(__file__).parent / "arihant-crm.apk"
+            if apk_path.exists():
+                self.send_response(200)
+                self.send_header('Content-Type','application/vnd.android.package-archive')
+                self.send_header('Content-Disposition','attachment; filename="Arihant-CRM.apk"')
+                self.send_header('Content-Length', str(apk_path.stat().st_size))
+                self.end_headers()
+                with open(apk_path, 'rb') as f:
+                    self.wfile.write(f.read())
+            else:
+                self.send_response(404);self.end_headers()
+                self.wfile.write(b"APK not found")
+        elif p=='/install':
+            self.send_html(install_page())
         else:self.send_response(404);self.end_headers()
     def do_POST(self):
         p=urlparse(self.path).path;b=self.body()
@@ -693,6 +708,51 @@ def export_csv():
     w.writerow(["id","name","phone","email","product","category","location","status","date"])
     for i in inqs:w.writerow([i["id"],i["customer_name"],i.get("phone",""),i.get("email",""),(i.get("product_interest","")[:50]),"; ".join(parse_cats(i.get("categories"))),i.get("location",""),i["status"],(i.get("inquiry_date","")[:10])])
     return out.getvalue()
+
+def install_page():
+    return '''<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Install Arihant CRM</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#0a0e27;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.c{background:#131836;border-radius:24px;padding:32px;max-width:400px;width:100%;text-align:center;border:1px solid #2d3436}
+.ico{font-size:72px;margin-bottom:16px}
+h1{font-size:24px;margin-bottom:4px;background:linear-gradient(135deg,#fff,#74b9ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.sub{color:#636e72;font-size:14px;margin-bottom:24px}
+.steps{text-align:left;margin:20px 0}
+.s{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid #2d3436}
+.s:last-child{border:none}
+.n{background:#6c5ce7;color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0}
+.t{font-size:14px;line-height:1.5}.t b{color:#00b894}
+.btn{display:block;background:linear-gradient(135deg,#6c5ce7,#a29bfe);color:#fff;padding:16px;border-radius:16px;text-decoration:none;font-weight:700;font-size:18px;margin:16px 0;transition:all .2s}
+.btn:active{transform:scale(.96)}
+.btn2{display:block;background:#00b894;color:#fff;padding:14px;border-radius:14px;text-decoration:none;font-weight:600;font-size:14px;margin:8px 0}
+.url{background:rgba(108,92,231,.1);border:1px solid rgba(108,92,231,.3);border-radius:12px;padding:12px;margin:16px 0;font-size:12px;word-break:break-all;color:#74b9ff}
+.ios{background:rgba(0,184,148,.1);border:1px solid rgba(0,184,148,.3);border-radius:12px;padding:12px;margin:12px 0;font-size:12px}
+</style></head><body>
+<div class="c">
+  <div class="ico">📱</div>
+  <h1>Arihant Enterprises CRM</h1>
+  <div class="sub">Manufacturer & Exporter, Pune</div>
+
+  <a class="btn" href="/download">⬇️ Download APK (17KB)</a>
+
+  <div class="steps">
+    <div class="s"><div class="n">1</div><div class="t">Download the <b>APK file</b> above</div></div>
+    <div class="s"><div class="n">2</div><div class="t">Open the downloaded file</div></div>
+    <div class="s"><div class="n">3</div><div class="t">Tap <b>"Allow from this source"</b> if asked</div></div>
+    <div class="s"><div class="n">4</div><div class="t">Tap <b>"Install"</b> — Done! 🎉</div></div>
+  </div>
+
+  <div class="ios">
+    <b>📱 Or install as PWA (no APK needed):</b><br>
+    Open <b>/</b> in Chrome → Tap ⋮ → <b>"Install app"</b>
+  </div>
+
+  <div class="url">App connects to:<br>https://locator-vote-toddler-measurement.trycloudflare.com</div>
+</div>
+</body></html>'''
 
 if __name__=='__main__':
     print(f"\n🏢 Arihant Enterprises Mobile CRM")
